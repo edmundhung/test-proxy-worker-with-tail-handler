@@ -7,16 +7,44 @@ const mf = new Miniflare({
         {
             name: "my-worker",
             modules: true,
-            scriptPath: "./src/my-worker.js",
+            script: `
+                export default {
+                    fetch(request) {
+                        console.log('Fetch event received in My Worker', request.method, request.url);
+                        return new Response('Hello from My Worker!');
+                    },
+                }
+            `,
             // This will print out logs from both my-worker and tail-worker
-            // But pointing the tail consumer to the proxy-worker will only print logs from my-worker
+            // Replacing tail consumer to "proxy-worker" will only print logs from my-worker
             tails: ['tail-worker'],
         },
         {
             name: "proxy-worker",
             compatibilityFlags: ["experimental"],
             modules: true,
-            scriptPath: "./src/proxy-worker.js",
+            script: `
+                import { WorkerEntrypoint } from 'cloudflare:workers';
+                
+                export default class RPCProxyWorker extends WorkerEntrypoint {
+                    async fetch(request) {
+                        return this.env.FETCHER.fetch(request);
+                    }
+                
+                    constructor(ctx, env) {
+                        super(ctx, env);
+                        return new Proxy(this, {
+                            get(target, prop) {
+                                if (Reflect.has(target, prop)) {
+                                    return Reflect.get(target, prop);
+                                }
+                
+                                return Reflect.get(target.env.RPC_WORKER, prop);
+                            },
+                        });
+                    }
+                }
+            `,
             serviceBindings: {
                 FETCHER: 'tail-worker',
                 RPC_WORKER: 'tail-worker',
@@ -26,7 +54,28 @@ const mf = new Miniflare({
             name: "tail-worker",
             compatibilityFlags: ["experimental"],
             modules: true,
-            scriptPath: "./src/tail-worker.js",
+            script: `
+                import { WorkerEntrypoint } from 'cloudflare:workers';
+                
+                export default class TailWorker extends WorkerEntrypoint {
+                    fetch() {
+                        return new Response('Hello from Tail Worker!');
+                    }
+                    tail(events) {
+                        console.log('Tail event received:', events);
+                    } 
+                }
+
+                // Same issue with non WorkerEntrypoint export
+                // export default {
+                //     fetch() {
+                //         return new Response('Hello from Tail Worker!');
+                //     },
+                //     tail(events) {
+                //         console.log('Tail event received:', events);
+                //     } 
+                // }
+            `
         }
     ]
 });
